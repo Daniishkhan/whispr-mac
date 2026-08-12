@@ -18,7 +18,7 @@ final class AppWindows {
             window: &settingsWindow,
             makeContent: { SettingsView(state: state) },
             title: "Whispr Settings",
-            size: NSSize(width: 540, height: 640)
+            size: NSSize(width: 540, height: 780)
         )
     }
 

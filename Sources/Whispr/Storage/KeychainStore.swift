@@ -1,13 +1,22 @@
 import Foundation
 import Security
 
-/// Stores the Deepgram API key in the macOS Keychain as a generic password.
+/// Stores Deepgram and LLM API keys as independent generic passwords in macOS Keychain.
 enum KeychainStore {
 
     private static let service = "com.whispr.app"
-    private static let account = "deepgram-api-key"
+    private static let deepgramAccount = "deepgram-api-key"
+    private static let polishAccount = "polish-api-key"
 
     static func saveAPIKey(_ key: String) throws {
+        try save(key, account: deepgramAccount)
+    }
+
+    static func savePolishAPIKey(_ key: String) throws {
+        try save(key, account: polishAccount)
+    }
+
+    private static func save(_ key: String, account: String) throws {
         let data = Data(key.utf8)
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
@@ -30,6 +39,14 @@ enum KeychainStore {
     }
 
     static func loadAPIKey() -> String? {
+        load(account: deepgramAccount)
+    }
+
+    static func loadPolishAPIKey() -> String? {
+        load(account: polishAccount)
+    }
+
+    private static func load(account: String) -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -44,6 +61,14 @@ enum KeychainStore {
     }
 
     static func deleteAPIKey() {
+        delete(account: deepgramAccount)
+    }
+
+    static func deletePolishAPIKey() {
+        delete(account: polishAccount)
+    }
+
+    private static func delete(account: String) {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,

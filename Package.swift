@@ -8,6 +8,11 @@ let package = Package(
         .executableTarget(
             name: "Whispr",
             path: "Sources/Whispr"
-        )
+        ),
+        .testTarget(
+            name: "WhisprTests",
+            dependencies: ["Whispr"],
+            path: "Tests/WhisprTests"
+        ),
     ]
 )

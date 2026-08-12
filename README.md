@@ -18,6 +18,11 @@ Hold Right ⌥  →  speak  →  release
 
 - **Preview-first flow** — dictation never types anything until you press
   Insert. Edit the transcript in place before it goes anywhere.
+- **LLM polish before preview** — optionally fixes speech-recognition errors,
+  grammar, and technical terms before preview. When an important ambiguity
+  cannot be inferred safely, Whispr asks up to three short questions, then
+  applies your answers in one final pass. Raw and polished versions remain
+  available in the preview.
 - **Two ways to talk**: hold-to-talk (Right ⌥) or hands-free toggle (⌃⌥Space).
 - **Streaming Deepgram Nova-3** over WebSocket with smart formatting and
   tuned endpointing (`endpointing=800`, `utterance_end_ms=1000`) for
@@ -40,6 +45,8 @@ Hold Right ⌥  →  speak  →  release
   `sudo xcodebuild -license accept && sudo xcodebuild -runFirstLaunch`
 - A [Deepgram](https://console.deepgram.com/signup) API key (pay-as-you-go
   credits work fine)
+- An [OpenAI API key](https://platform.openai.com/api-keys) if you keep LLM
+  Polish enabled (it is on by default)
 
 ## Build & run
 
@@ -49,10 +56,12 @@ make run        # same, then launches it
 make CONFIG=release run   # optimized build
 ```
 
-First launch opens Settings: paste your API key, click **Save**, then
-**Test Connection**. Grant **Microphone** when prompted, and
-**Accessibility** (System Settings → Privacy & Security → Accessibility) if
-you want direct pasting.
+First launch opens Settings: paste your Deepgram API key, click **Save**, then
+**Test Connection**. For LLM polish, save a separate OpenAI-compatible API key
+in **LLM Polish**. That section also configures the HTTPS base URL, model, and
+reasoning effort (defaults: `https://api.openai.com/v1`, `gpt-5.6-terra`,
+`high`). Grant **Microphone** when prompted, and **Accessibility** (System
+Settings → Privacy & Security → Accessibility) if you want direct pasting.
 
 ### One-time signing step (recommended)
 
@@ -76,6 +85,7 @@ make cert
 | Copy instead | **Copy** button |
 | Discard | **Esc** |
 | Abort mid-dictation | **✕** on the HUD |
+| Cancel initial polish | **Esc** or **✕** on the Polishing panel |
 | Re-copy old transcripts | menu bar → Recent, or History window |
 
 If the preview warns *"No Accessibility — Insert copies instead"*, Insert
@@ -86,11 +96,12 @@ puts the text on your clipboard; paste manually with ⌘V.
 ```
 Sources/Whispr/
 ├── WhisprApp.swift            @main — menu-bar app, Settings & History scenes
-├── AppState.swift             state machine: idle→connecting→recording→finishing→preview
+├── AppState.swift             state machine: idle→connecting→recording→finishing→polishing→preview
 ├── Deepgram/
 │   ├── DeepgramClient.swift   URLSessionWebSocketTask, ordered send pump, event stream
 │   ├── DeepgramMessage.swift  frame decoding
 │   └── TranscriptAssembler.swift  merges interim/final results without duplication
+├── Polish/                    Chat Completions client, strict response parser, two-call flow
 ├── Audio/AudioCapture.swift   AVAudioEngine → resample to 16 kHz mono Int16 PCM
 ├── Hotkeys/HotkeyManager.swift  Carbon hotkey (toggle) + flagsChanged monitors (hold)
 ├── Insert/TextInserter.swift  clipboard swap + CGEvent ⌘V + clipboard restore
@@ -112,11 +123,16 @@ The binary has CLI entry points that exercise the pipeline without hotkeys:
 ./Whispr.app/Contents/MacOS/Whispr --selftest-connection     # websocket + API key check
 ./Whispr.app/Contents/MacOS/Whispr --selftest-mic=4          # capture 4 s, report signal levels
 ./Whispr.app/Contents/MacOS/Whispr --selftest-file=audio.aiff  # stream a file through a real session → preview panel
+./Whispr.app/Contents/MacOS/Whispr --selftest-polish="fix the log in page"  # one production polish call
+./Whispr.app/Contents/MacOS/Whispr --selftest-polish-mock  # deterministic unclear → resolution flow
 ```
 
 `--selftest-file` runs the production session code (websocket, transcript
 assembly, HUD, close, preview) — only the audio source is swapped from mic
 to file. Generate test audio with `say -o /tmp/t.aiff "hello world"`.
+`--selftest-polish` does not start hotkeys or open windows; it reports only a
+well-formed outcome, never key material. The mock variant requires no network
+or API key and verifies the two-call clarification limit.
 
 ## Notes & limitations
 
@@ -126,6 +142,11 @@ to file. Generate test audio with `say -o /tmp/t.aiff "hello world"`.
   are a future item.
 - Deepgram costs: streaming is billed per minute of audio; a dictation
   session only streams while you hold the key.
+- **Privacy and cost:** LLM Polish is enabled by default. When enabled, each
+  non-empty dictation and your Vocabulary keyterms are sent to the configured
+  HTTPS endpoint, which may bill for the request. Toggle **Polish before
+  preview** off in the menu or Settings for zero LLM traffic. Both API keys
+  are stored separately in the macOS Keychain, never in UserDefaults.
 
 ## License
 

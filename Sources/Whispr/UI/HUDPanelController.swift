@@ -23,10 +23,18 @@ final class HUDPanelController: @unchecked Sendable {
         panel.orderFrontRegardless()
     }
 
+    func showPolishing(state: AppState) {
+        noticeTimer?.cancel()
+        let panel = ensurePanel()
+        setContent(PolishingView(state: state), size: NSSize(width: 500, height: 112))
+        positionBottomCenter(panel)
+        panel.orderFrontRegardless()
+    }
+
     func showPreview(state: AppState) {
         noticeTimer?.cancel()
         let panel = ensurePanel()
-        setContent(PreviewView(state: state), size: NSSize(width: 620, height: 360))
+        setContent(PreviewView(state: state), size: NSSize(width: 660, height: 560))
         centerOnScreen(panel)
         NSApp.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)

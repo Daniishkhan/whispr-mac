@@ -17,7 +17,17 @@ struct MenuContent: View {
             Button("Stop Dictating") {
                 state.stopFromMenu()
             }
+        } else if state.phase == .polishing {
+            Text("Polishing in progress — use Esc or ✕ to cancel")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
+
+        Toggle("Polish before preview", isOn: Binding(
+            get: { state.polishEnabled },
+            set: { state.setPolishEnabled($0) }
+        ))
+        .disabled(state.phase != .idle)
 
         if !state.historyItems.isEmpty {
             Menu("Recent") {

@@ -4,6 +4,7 @@ struct SettingsView: View {
     @ObservedObject var state: AppState
 
     @State private var apiKeyInput = ""
+    @State private var polishAPIKeyInput = ""
     @State private var keytermsText = SettingsStore.shared.keytermsText
     @State private var historyEnabled = SettingsStore.shared.historyEnabled
 
@@ -27,14 +28,14 @@ struct SettingsView: View {
                     Button("Test Connection") {
                         state.testConnection()
                     }
-                    .disabled(!state.hasAPIKey)
-                    if state.hasAPIKey {
+                    .disabled(!state.hasDeepgramAPIKey)
+                    if state.hasDeepgramAPIKey {
                         Button("Remove Key", role: .destructive) {
                             state.deleteAPIKey()
                         }
                     }
                 }
-                if state.hasAPIKey {
+                if state.hasDeepgramAPIKey {
                     Label("Key saved in macOS Keychain", systemImage: "checkmark.shield.fill")
                         .font(.caption)
                         .foregroundStyle(.green)
@@ -52,6 +53,76 @@ struct SettingsView: View {
             }
 
             Section {
+                Toggle("Polish dictated text before preview", isOn: Binding(
+                    get: { state.polishEnabled },
+                    set: { state.setPolishEnabled($0) }
+                ))
+                .disabled(state.phase != .idle)
+
+                TextField("Base URL", text: Binding(
+                    get: { state.llmBaseURL },
+                    set: { state.setLLMBaseURL($0) }
+                ))
+                .textFieldStyle(.roundedBorder)
+                .autocorrectionDisabled()
+
+                TextField("Model", text: Binding(
+                    get: { state.llmModel },
+                    set: { state.setLLMModel($0) }
+                ))
+                .textFieldStyle(.roundedBorder)
+                .autocorrectionDisabled()
+
+                Picker("Reasoning effort", selection: Binding(
+                    get: { state.llmReasoningEffort },
+                    set: { state.setLLMReasoningEffort($0) }
+                )) {
+                    ForEach(PolishReasoningEffort.allCases, id: \.self) { effort in
+                        Text(effort.rawValue).tag(effort)
+                    }
+                }
+
+                SecureField("Paste your OpenAI-compatible API key", text: $polishAPIKeyInput)
+                    .textFieldStyle(.roundedBorder)
+                HStack {
+                    Button("Save") {
+                        state.savePolishAPIKey(polishAPIKeyInput)
+                        polishAPIKeyInput = ""
+                    }
+                    .disabled(polishAPIKeyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    Button("Test Connection") {
+                        state.testPolishConnection()
+                    }
+                    .disabled(!state.hasPolishAPIKey)
+                    if state.hasPolishAPIKey {
+                        Button("Remove Key", role: .destructive) {
+                            state.deletePolishAPIKey()
+                        }
+                    }
+                }
+                if state.hasPolishAPIKey {
+                    Label("Key saved in macOS Keychain", systemImage: "checkmark.shield.fill")
+                        .font(.caption)
+                        .foregroundStyle(.green)
+                }
+                if let result = state.polishConnectionTestResult {
+                    Text(result)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Text("Effective host: \(state.effectiveLLMHost)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("When polish is on, dictated transcripts and Vocabulary keyterms are sent to this configured endpoint. Turn it off for zero LLM traffic.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Link("Get an OpenAI API key →", destination: URL(string: "https://platform.openai.com/api-keys")!)
+                    .font(.caption)
+            } header: {
+                Text("LLM Polish")
+            }
+
+            Section {
                 TextEditor(text: $keytermsText)
                     .font(.system(size: 13))
                     .frame(height: 120)
@@ -62,7 +133,7 @@ struct SettingsView: View {
                     .onChange(of: keytermsText) { _, newValue in
                         SettingsStore.shared.keytermsText = newValue
                     }
-                Text("\(keytermCount)/100 keyterms — one per line. These are boosted during recognition (names, jargon, project terms).")
+                Text("\(keytermCount)/100 keyterms — one per line. These are boosted during recognition and used as LLM polish glossary context.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } header: {
@@ -141,7 +212,7 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 540, height: 640)
+        .frame(width: 540, height: 780)
         .onReceive(permissionPoll) { _ in
             state.refreshPermissions()
         }
