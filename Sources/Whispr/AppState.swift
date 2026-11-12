@@ -434,6 +434,10 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
         let capture = AudioCapture()
         audio = capture
+        capture.onFailure = { [weak self, weak capture] error in
+            guard let self, let capture, self.audio === capture else { return }
+            self.handleMicrophoneLost(error.localizedDescription)
+        }
         do {
             let stream = try capture.start()
             audioTask = Task { [weak self] in
@@ -483,6 +487,20 @@ final class AppState: ObservableObject, @unchecked Sendable {
         guard phase == .recording || phase == .connecting else { return }
         lastError = "Stopped automatically after 5 minutes."
         finishSession()
+    }
+
+    /// The input device changed mid-dictation and capture could not be
+    /// restarted. Keep whatever was already transcribed rather than leaving
+    /// the HUD "listening" to a dead microphone.
+    private func handleMicrophoneLost(_ detail: String) {
+        guard phase == .recording || phase == .connecting else { return }
+        if assembler.display.isEmpty {
+            teardownSession()
+            showError(detail)
+        } else {
+            lastError = "\(detail) — review what was captured."
+            finishSession()
+        }
     }
 
     /// Abort recording/finishing with no preview.
@@ -1071,9 +1089,17 @@ final class AppState: ObservableObject, @unchecked Sendable {
                 }
             }
             let capture = AudioCapture()
+            capture.onFailure = { error in
+                dbg("selftest-mic: capture failed: \(error.localizedDescription)")
+            }
             do {
                 let stream = try capture.start()
-                let deadline = ContinuousClock.now + .seconds(seconds)
+                // Stop on a timer, not on chunk arrival: a microphone that
+                // goes quiet must end the test with a short count, not hang it.
+                let stopper = Task {
+                    try? await Task.sleep(for: .seconds(seconds))
+                    capture.stop()
+                }
                 var chunks = 0
                 var bytes = 0
                 var peak: Float = 0
@@ -1081,13 +1107,17 @@ final class AppState: ObservableObject, @unchecked Sendable {
                     chunks += 1
                     bytes += chunk.count
                     peak = max(peak, RMSLevel.compute(chunk))
-                    if ContinuousClock.now >= deadline { break }
                 }
+                stopper.cancel()
                 capture.stop()
+                // 16 kHz mono Int16 is 32 000 bytes per second. A capture that
+                // stalls partway (e.g. after a device change) falls well short.
+                let expectedBytes = max(seconds, 1) * 32_000
+                let coverage = bytes * 100 / expectedBytes
                 let peakText = String(format: "%.3f", peak)
-                dbg("selftest-mic: \(chunks) chunks, \(bytes) bytes, peak level \(peakText)")
+                dbg("selftest-mic: \(chunks) chunks, \(bytes) bytes (\(coverage)% of \(seconds)s), peak level \(peakText)")
                 self?.refreshPermissions()
-                exit(chunks > 0 ? 0 : 2)
+                exit(coverage >= 70 ? 0 : 2)
             } catch {
                 dbg("selftest-mic: failed to start: \(error.localizedDescription)")
                 exit(1)
