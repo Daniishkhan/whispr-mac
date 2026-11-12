@@ -23,11 +23,14 @@ app: build
 	@mkdir -p $(BUNDLE)/Contents/MacOS $(BUNDLE)/Contents/Resources
 	@cp $(BINARY) $(BUNDLE)/Contents/MacOS/$(APP_NAME)
 	@cp Resources/Info.plist $(BUNDLE)/Contents/Info.plist
-	@if security find-identity -v -p codesigning | grep -q "$(CERT_NAME)"; then \
-		echo ">> Signing with '$(CERT_NAME)'"; \
-		codesign --force --sign "$(CERT_NAME)" --identifier $(BUNDLE_ID) $(BUNDLE); \
+	@# An identity macOS will sign with is listed bare; a rejected one has a
+	@# reason after its name. If signing with it fails anyway, fall back to
+	@# ad-hoc rather than leave the bundle unsigned.
+	@if security find-identity -v -p codesigning | grep -q '"$(CERT_NAME)"$$' \
+		&& codesign --force --sign "$(CERT_NAME)" --identifier $(BUNDLE_ID) $(BUNDLE); then \
+		echo ">> Signed with '$(CERT_NAME)'"; \
 	else \
-		echo ">> No '$(CERT_NAME)' identity found - ad-hoc signing."; \
+		echo ">> No usable '$(CERT_NAME)' identity - ad-hoc signing."; \
 		echo ">> Run 'make cert' once to keep Keychain/Accessibility grants across rebuilds."; \
 		codesign --force --sign - $(BUNDLE); \
 	fi
