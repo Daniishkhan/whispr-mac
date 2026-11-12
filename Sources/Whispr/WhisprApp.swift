@@ -46,6 +46,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             state.runPolishSelfTest(text: String(polishArg.dropFirst(prefix.count)))
             return true
         }
+        if let vocabArg = args.first(where: { $0.hasPrefix("--selftest-vocab") }) {
+            let prefix = "--selftest-vocab="
+            state.runVocabularySelfTest(path: vocabArg.hasPrefix(prefix) ? String(vocabArg.dropFirst(prefix.count)) : nil)
+            return true
+        }
         if let micArg = args.first(where: { $0.hasPrefix("--selftest-mic") }) {
             let seconds = Int(micArg.components(separatedBy: "=").last ?? "") ?? 3
             state.runMicSelfTest(seconds: seconds)

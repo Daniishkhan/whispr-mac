@@ -33,7 +33,11 @@ struct PolishClient: PolishService, Sendable {
 
     func initial(transcript: String, glossary: [String]) async throws -> PolishServiceResponse {
         try await request(system: PolishPrompt.initialSystem,
-                          user: PolishPrompt.initialPayload(transcript: transcript, glossary: glossary))
+                          user: PolishPrompt.initialPayload(
+                            transcript: transcript,
+                            glossary: glossary,
+                            targetApp: configuration.targetApp
+                          ))
     }
 
     func resolve(
@@ -47,7 +51,8 @@ struct PolishClient: PolishService, Sendable {
                             transcript: transcript,
                             answers: answers,
                             skipped: skipped,
-                            glossary: glossary
+                            glossary: glossary,
+                            targetApp: configuration.targetApp
                           ))
     }
 

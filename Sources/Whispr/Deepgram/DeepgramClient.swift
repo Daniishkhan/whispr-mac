@@ -94,6 +94,13 @@ final class DeepgramClient: @unchecked Sendable {
         enqueue(.audio(data))
     }
 
+    /// Asks Deepgram to transcribe everything it has buffered right now. The
+    /// last result of that flush carries `from_finalize`, which is the
+    /// earliest point the transcript is known to be complete.
+    func sendFinalize() {
+        enqueue(.control(#"{"type":"Finalize"}"#))
+    }
+
     /// Flushes server-side audio and asks Deepgram to close the stream once it
     /// has returned all final transcripts.
     func sendCloseStream() {

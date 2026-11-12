@@ -31,6 +31,10 @@ struct PreviewView: View {
                 clarificationSection
             }
 
+            if state.selectedPreviewVersion == .polished, !state.polishChanges.isEmpty {
+                polishChangesRow
+            }
+
             TextEditor(text: $state.previewText)
                 .font(.system(size: 16))
                 .focused($editorFocused)
@@ -77,6 +81,34 @@ struct PreviewView: View {
                     .lineLimit(1)
             }
             Spacer()
+        }
+    }
+
+    /// Names the polish step swapped in. A wrong "correction" is easy to miss
+    /// in a paragraph, so each one is listed and can be put back with a click.
+    private var polishChangesRow: some View {
+        HStack(spacing: 6) {
+            Text("Polish changed")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize()
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(state.polishChanges, id: \.self) { change in
+                        Button {
+                            state.revertPolishChange(change)
+                        } label: {
+                            Text("\(change.from) → \(change.to)")
+                                .font(.caption)
+                                .lineLimit(1)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .help("Put back “\(change.from)”")
+                        .disabled(state.polishLoading)
+                    }
+                }
+            }
         }
     }
 

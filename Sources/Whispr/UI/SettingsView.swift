@@ -113,7 +113,7 @@ struct SettingsView: View {
                 Text("Effective host: \(state.effectiveLLMHost)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Text("When polish is on, dictated transcripts and Vocabulary keyterms are sent to this configured endpoint. Turn it off for zero LLM traffic.")
+                Text("When polish is on, dictated transcripts and your vocabulary — the list below, learned terms and project names — are sent to this configured endpoint. Turn it off for zero LLM traffic.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Link("Get an OpenAI API key →", destination: URL(string: "https://platform.openai.com/api-keys")!)
@@ -138,6 +138,49 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             } header: {
                 Text("Vocabulary (Nova-3 keyterms)")
+            }
+
+            Section {
+                Toggle("Add names from the project I'm dictating into", isOn: Binding(
+                    get: { state.projectVocabularyEnabled },
+                    set: { state.setProjectVocabularyEnabled($0) }
+                ))
+                if state.projectVocabularyEnabled {
+                    Text(state.projectVocabularySummary.isEmpty
+                         ? "No project found for the current app yet."
+                         : "Using \(state.projectVocabularySummary).")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    TextField("Always include these folders (comma-separated)", text: Binding(
+                        get: { state.projectFoldersText },
+                        set: { state.setProjectFoldersText($0) }
+                    ))
+                    .textFieldStyle(.roundedBorder)
+                    .autocorrectionDisabled()
+                }
+                Text("Whispr finds the project from the app you dictate into and reads type, function, file and dependency names from its folder. They are sent to Deepgram as keyterms and, when polish is on, to the LLM endpoint.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } header: {
+                Text("Project vocabulary")
+            }
+
+            Section {
+                TextEditor(text: Binding(
+                    get: { state.learnedTermsText },
+                    set: { state.setLearnedTermsText($0) }
+                ))
+                .font(.system(size: 13))
+                .frame(height: 70)
+                .scrollContentBackground(.hidden)
+                .padding(4)
+                .background(Color(nsColor: .textBackgroundColor).opacity(0.6))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                Text("Names you type over something in the preview are added here and used like Vocabulary. Edit or delete them freely.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } header: {
+                Text("Learned from your corrections")
             }
 
             Section {

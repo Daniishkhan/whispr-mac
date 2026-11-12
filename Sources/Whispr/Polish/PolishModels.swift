@@ -15,6 +15,9 @@ struct PolishConfiguration: Sendable {
     let model: String
     let reasoningEffort: PolishReasoningEffort
     let apiKey: String
+    /// Name of the app the text will be pasted into, when known. Lets the
+    /// model tell an agent prompt from a chat message.
+    var targetApp: String? = nil
 }
 
 enum PolishServiceResponse: Equatable, Sendable {

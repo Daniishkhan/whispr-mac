@@ -2,7 +2,8 @@ import Foundation
 
 /// One decoded Deepgram websocket frame, reduced to what the app cares about.
 enum DeepgramMessage {
-    case results(isFinal: Bool, speechFinal: Bool, transcript: String)
+    /// `fromFinalize` marks the result that completes a `Finalize` flush.
+    case results(isFinal: Bool, speechFinal: Bool, transcript: String, fromFinalize: Bool)
     case speechStarted
     case utteranceEnd
     case metadata
@@ -25,7 +26,8 @@ enum DeepgramMessage {
             return .results(
                 isFinal: obj["is_final"] as? Bool ?? false,
                 speechFinal: obj["speech_final"] as? Bool ?? false,
-                transcript: transcript
+                transcript: transcript,
+                fromFinalize: obj["from_finalize"] as? Bool ?? false
             )
         case "SpeechStarted":
             return .speechStarted

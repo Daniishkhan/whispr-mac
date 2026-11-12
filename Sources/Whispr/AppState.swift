@@ -63,6 +63,12 @@ final class AppState: ObservableObject, @unchecked Sendable {
     @Published private(set) var selectedPreviewVersion: PreviewVersion = .raw
     @Published private(set) var clarificationItems: [ClarificationItem] = []
     @Published private(set) var polishLoading = false
+    /// Names the polish step swapped in, for the preview to point out.
+    @Published private(set) var polishChanges: [TextDiff.Change] = []
+    @Published private(set) var projectVocabularyEnabled: Bool
+    @Published private(set) var projectFoldersText: String
+    @Published private(set) var projectVocabularySummary: String = ""
+    @Published private(set) var learnedTermsText: String
 
     // MARK: - Internals
 
@@ -71,6 +77,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private let hotkeys = HotkeyManager()
     private let panel = HUDPanelController()
     private let windows = AppWindows()
+    private let vocabulary = ProjectVocabularyService()
     private let injectedPolishService: (any PolishService)?
     private var polishFlow: PolishFlowController?
     private var polishTask: Task<Void, Never>?
@@ -88,6 +95,14 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private var polishedPreviewText = ""
     private var workspaceObserver: NSObjectProtocol?
     private var didBootstrap = false
+    private var sessionUsedAutomaticKeyterms = false
+    private var retriedWithoutAutomaticKeyterms = false
+    /// Set when Deepgram refused a connection that carried learned or project
+    /// keyterms; they stay out of recognition until the app is relaunched.
+    private var automaticKeytermsSuspended = false
+    private var finishStartedAt: ContinuousClock.Instant?
+    private var polishStartedAt: ContinuousClock.Instant?
+    private var sessionTimings = HistoryStore.Timings()
 
     private static let maxSessionSeconds: UInt64 = 300
     private static let finishGraceSeconds: UInt64 = 3
@@ -98,6 +113,9 @@ final class AppState: ObservableObject, @unchecked Sendable {
         llmBaseURL = SettingsStore.shared.llmBaseURL
         llmModel = SettingsStore.shared.llmModel
         llmReasoningEffort = SettingsStore.shared.llmReasoningEffort
+        projectVocabularyEnabled = SettingsStore.shared.projectVocabularyEnabled
+        projectFoldersText = SettingsStore.shared.projectFoldersText
+        learnedTermsText = SettingsStore.shared.learnedTermsText
     }
 
     // MARK: - Derived display values
@@ -149,7 +167,9 @@ final class AppState: ObservableObject, @unchecked Sendable {
         historyItems = history.load()
         refreshPermissions()
         wireHotkeys()
+        vocabulary.onChange = { [weak self] in self?.updateProjectVocabularySummary() }
         observeFrontmostApp()
+        refreshProjectVocabulary()
         hotkeys.start()
 
         if !hasDeepgramAPIKey {
@@ -208,6 +228,64 @@ final class AppState: ObservableObject, @unchecked Sendable {
     func setLLMReasoningEffort(_ effort: PolishReasoningEffort) {
         llmReasoningEffort = effort
         settings.llmReasoningEffort = effort
+    }
+
+    func setProjectVocabularyEnabled(_ enabled: Bool) {
+        projectVocabularyEnabled = enabled
+        settings.projectVocabularyEnabled = enabled
+        if enabled {
+            refreshProjectVocabulary(force: true)
+        } else {
+            vocabulary.clear()
+        }
+    }
+
+    /// Saved as typed; picked up the next time the target app changes or a
+    /// dictation starts, rather than re-reading folders on every keystroke.
+    func setProjectFoldersText(_ value: String) {
+        projectFoldersText = value
+        settings.projectFoldersText = value
+    }
+
+    func setLearnedTermsText(_ value: String) {
+        learnedTermsText = value
+        settings.learnedTermsText = value
+    }
+
+    private func refreshProjectVocabulary(force: Bool = false) {
+        guard projectVocabularyEnabled else { return }
+        vocabulary.refresh(for: lastTargetApp, pinnedFolders: settings.projectFolderList, force: force)
+    }
+
+    /// The word lists for the next request: the Vocabulary from Settings,
+    /// terms learned from corrections, and names from the current project.
+    private func vocabularyLists(automaticKeyterms: Bool = true) -> VocabularyLists {
+        VocabularyBuilder.build(
+            manual: settings.keytermList,
+            learned: settings.learnedTermList,
+            project: projectVocabularyEnabled ? vocabulary.current : [],
+            automaticKeyterms: automaticKeyterms && !automaticKeytermsSuspended
+        )
+    }
+
+    private func updateProjectVocabularySummary() {
+        let projects = vocabulary.current
+        guard !projects.isEmpty else {
+            projectVocabularySummary = ""
+            return
+        }
+        let lists = vocabularyLists()
+        projectVocabularySummary = projects.map(\.name).joined(separator: ", ")
+            + " — \(lists.automaticKeytermCount) recognition terms, \(lists.glossary.count) glossary terms"
+    }
+
+    private static func isDictionaryWord(_ word: String) -> Bool {
+        NSSpellChecker.shared.checkSpelling(of: word, startingAt: 0).location == NSNotFound
+    }
+
+    private static func milliseconds(since start: ContinuousClock.Instant) -> Int {
+        let elapsed = ContinuousClock.now - start
+        return Int(elapsed.components.seconds) * 1_000 + Int(elapsed.components.attoseconds / 1_000_000_000_000_000)
     }
 
     var effectiveLLMHost: String {
@@ -337,6 +415,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
             else { return }
             Task { @MainActor [weak self] in
                 self?.lastTargetApp = app
+                self?.refreshProjectVocabulary()
             }
         }
         if let frontmost = NSWorkspace.shared.frontmostApplication,
@@ -419,11 +498,22 @@ final class AppState: ObservableObject, @unchecked Sendable {
         statusLine = "Connecting to Deepgram…"
         sessionTargetApp = lastTargetApp
         targetAppName = sessionTargetApp?.localizedName
+        sessionTimings = HistoryStore.Timings()
+        finishStartedAt = nil
+        polishStartedAt = nil
+        retriedWithoutAutomaticKeyterms = false
+
+        // Recognition needs its keyterms now, so it gets whatever project
+        // vocabulary is already resolved; the refresh started here is for the
+        // polish step a few seconds from now.
+        let lists = vocabularyLists()
+        sessionUsedAutomaticKeyterms = lists.automaticKeytermCount > 0
+        refreshProjectVocabulary(force: true)
 
         let newClient = DeepgramClient()
         client = newClient
         do {
-            try newClient.connect(apiKey: apiKey, keyterms: settings.keytermList, endpointingMs: 800)
+            try newClient.connect(apiKey: apiKey, keyterms: lists.keyterms, endpointingMs: 800)
         } catch {
             teardownSession()
             showError("Could not build the Deepgram request.")
@@ -443,7 +533,9 @@ final class AppState: ObservableObject, @unchecked Sendable {
             audioTask = Task { [weak self] in
                 for await chunk in stream {
                     self?.updateMicLevel(chunk)
-                    newClient.sendAudio(chunk)
+                    // Through `client`, not the one captured here: a session
+                    // may reconnect without its automatic keyterms.
+                    self?.client?.sendAudio(chunk)
                 }
             }
         } catch {
@@ -474,12 +566,18 @@ final class AppState: ObservableObject, @unchecked Sendable {
         maxDurationTask?.cancel()
         maxDurationTask = nil
 
+        // Finalize makes Deepgram transcribe what it has buffered right away
+        // and flag the last result, so the preview does not have to wait for
+        // the stream to wind down. CloseStream and the deadline stay as
+        // fallbacks for when that flag never comes.
+        finishStartedAt = .now
+        client?.sendFinalize()
         client?.sendCloseStream()
 
         finishDeadlineTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(Self.finishGraceSeconds))
             guard !Task.isCancelled else { return }
-            self?.completeToPreview()
+            self?.completeToPreview(reason: "timeout")
         }
     }
 
@@ -576,6 +674,10 @@ final class AppState: ObservableObject, @unchecked Sendable {
             if phase == .connecting {
                 phase = .recording
                 statusLine = "Listening…"
+                if retriedWithoutAutomaticKeyterms, !automaticKeytermsSuspended {
+                    automaticKeytermsSuspended = true
+                    updateProjectVocabularySummary()
+                }
             }
         case .text(let text):
             handleDeepgramMessage(DeepgramMessage.parse(text))
@@ -588,12 +690,15 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
     private func handleDeepgramMessage(_ message: DeepgramMessage) {
         switch message {
-        case .results(let isFinal, _, let transcript):
+        case .results(let isFinal, _, let transcript, let fromFinalize):
             assembler.apply(isFinal: isFinal, transcript: transcript)
             liveText = assembler.display
+            if fromFinalize, phase == .finishing {
+                completeToPreview(reason: "finalize")
+            }
         case .metadata:
             if phase == .finishing {
-                completeToPreview()
+                completeToPreview(reason: "metadata")
             }
         case .error(let detail):
             handleConnectionEnded(detail: "Deepgram error: \(detail)")
@@ -607,12 +712,17 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private func handleConnectionEnded(detail: String) {
         switch phase {
         case .finishing:
-            completeToPreview()
+            completeToPreview(reason: "closed")
         case .connecting:
+            if Self.looksLikeRejectedRequest(detail), reconnectWithoutAutomaticKeyterms() { return }
             teardownSession()
             showError(detail)
         case .recording:
             let hadPartialText = !assembler.display.isEmpty
+            if !hadPartialText, detail.localizedCaseInsensitiveContains("keyterm"),
+               reconnectWithoutAutomaticKeyterms() {
+                return
+            }
             audio?.stop()
             audio = nil
             audioTask?.cancel()
@@ -620,7 +730,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
             if hadPartialText {
                 lastError = "Connection lost (\(detail)) — review what was captured."
                 phase = .finishing
-                completeToPreview()
+                completeToPreview(reason: "closed")
             } else {
                 teardownSession()
                 showError(detail)
@@ -630,10 +740,51 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
     }
 
-    private func completeToPreview() {
+    /// A refusal of the request itself (as opposed to a network failure, a
+    /// bad key or rate limiting), which is how an over-long keyterm list
+    /// shows up.
+    private static func looksLikeRejectedRequest(_ detail: String) -> Bool {
+        detail.localizedCaseInsensitiveContains("keyterm")
+            || detail.hasPrefix("Deepgram connection failed (HTTP 4")
+    }
+
+    /// Deepgram limits keyterms by a token count it does not let us measure,
+    /// so a session that sent learned or project terms and was refused gets
+    /// one more try with only the Vocabulary from Settings — the list that
+    /// worked before those terms existed. The microphone keeps running. If
+    /// that second attempt connects, the automatic terms were the cause and
+    /// stay out of recognition until the app is relaunched.
+    private func reconnectWithoutAutomaticKeyterms() -> Bool {
+        guard sessionUsedAutomaticKeyterms, !retriedWithoutAutomaticKeyterms,
+              let apiKey = KeychainStore.loadAPIKey(), !apiKey.isEmpty
+        else { return false }
+        retriedWithoutAutomaticKeyterms = true
+        dbg("deepgram: request refused with automatic keyterms — retrying with the Settings vocabulary only")
+
+        client?.cancel()
+        eventsTask?.cancel()
+        let newClient = DeepgramClient()
+        do {
+            try newClient.connect(apiKey: apiKey, keyterms: settings.keytermList, endpointingMs: 800)
+        } catch {
+            return false
+        }
+        client = newClient
+        phase = .connecting
+        statusLine = "Connecting to Deepgram…"
+        startEventPump(for: newClient)
+        return true
+    }
+
+    private func completeToPreview(reason: String) {
         guard phase == .finishing else { return }
         finishDeadlineTask?.cancel()
         finishDeadlineTask = nil
+        if let finishStartedAt {
+            sessionTimings.finishMs = Self.milliseconds(since: finishStartedAt)
+            sessionTimings.finishReason = reason
+        }
+        finishStartedAt = nil
 
         let text = assembler.finish()
         client?.cancel()
@@ -662,7 +813,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
             baseURL: llmBaseURL,
             model: llmModel,
             reasoningEffort: llmReasoningEffort,
-            apiKey: apiKey
+            apiKey: apiKey,
+            targetApp: targetAppName
         )
     }
 
@@ -696,7 +848,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
         let flow = PolishFlowController(service: service)
         polishFlow = flow
-        let glossary = settings.keytermList
+        let glossary = vocabularyLists().glossary
+        polishStartedAt = .now
         polishTask = Task { [weak self] in
             let result = await flow.start(transcript: raw, glossary: glossary)
             guard !Task.isCancelled else { return }
@@ -706,6 +859,10 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
     private func handleInitialPolishResult(_ result: PolishFlowResult) {
         guard phase == .polishing else { return }
+        if let polishStartedAt {
+            sessionTimings.polishMs = Self.milliseconds(since: polishStartedAt)
+        }
+        polishStartedAt = nil
         polishTask = nil
         hotkeys.unregisterTemporaryEscape()
         switch result {
@@ -811,9 +968,49 @@ final class AppState: ObservableObject, @unchecked Sendable {
         selectedPreviewVersion = polished == nil ? .raw : .polished
         previewText = selectedPreviewVersion == .polished ? polishedPreviewText : rawPreviewText
         previewWarning = warning
+        updatePolishChanges()
         phase = .preview
         statusLine = "Review and insert"
+        dbg("timing: transcript complete after \(sessionTimings.finishMs.map(String.init) ?? "?") ms"
+            + " (\(sessionTimings.finishReason ?? "n/a")), polish \(sessionTimings.polishMs.map(String.init) ?? "none") ms")
         panel.showPreview(state: self)
+    }
+
+    /// Lists the names polish swapped in, so a wrong "correction" is visible
+    /// without comparing the two versions word by word.
+    private func updatePolishChanges() {
+        guard let polishedText, !rawTranscript.isEmpty else {
+            polishChanges = []
+            return
+        }
+        polishChanges = TextDiff.notableSubstitutions(
+            from: rawTranscript,
+            to: polishedText,
+            limit: 8,
+            isDictionaryWord: { Self.isDictionaryWord($0) }
+        )
+    }
+
+    /// Puts back what was heard for one of the listed changes.
+    func revertPolishChange(_ change: TextDiff.Change) {
+        polishChanges.removeAll { $0 == change }
+        guard selectedPreviewVersion == .polished, !polishLoading,
+              let range = previewText.range(of: change.to)
+        else { return }
+        previewText.replaceSubrange(range, with: change.from)
+    }
+
+    /// A name typed over something else in the preview is a correction the
+    /// recogniser and the polish model should not need twice.
+    private func learnFromEdits(finalText: String) {
+        let shown = selectedPreviewVersion == .polished ? (polishedText ?? rawTranscript) : rawTranscript
+        guard !shown.isEmpty else { return }
+        let terms = TextDiff.correctedTerms(from: shown, to: finalText) { Self.isDictionaryWord($0) }
+        guard !terms.isEmpty else { return }
+        let added = settings.addLearnedTerms(terms)
+        guard !added.isEmpty else { return }
+        learnedTermsText = settings.learnedTermsText
+        dbg("vocabulary: learned \(added.joined(separator: ", "))")
     }
 
     private func applyPolishedText(_ text: String, warning: String?) {
@@ -824,6 +1021,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         selectedPreviewVersion = .polished
         previewText = text
         previewWarning = warning
+        updatePolishChanges()
     }
 
     private func applyRawText(warning: String?) {
@@ -834,6 +1032,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         selectedPreviewVersion = .raw
         previewText = rawPreviewText
         previewWarning = warning
+        polishChanges = []
     }
 
     private func discardPolishFlow() {
@@ -863,6 +1062,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         clarificationItems = []
         polishLoading = false
         previewWarning = nil
+        polishChanges = []
     }
 
     /// Releases the flow's pending raw transcript when preview actions finish.
@@ -909,6 +1109,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
             return
         }
         let target = sessionTargetApp
+        learnFromEdits(finalText: text)
         recordHistory(text)
         releasePreviewPolishState()
         phase = .idle
@@ -959,6 +1160,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
             cancelPreview()
             return
         }
+        learnFromEdits(finalText: text)
         recordHistory(text)
         TextInserter.copyToClipboard(text: text)
         releasePreviewPolishState()
@@ -986,7 +1188,14 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
     private func recordHistory(_ text: String) {
         guard settings.historyEnabled else { return }
-        historyItems = history.add(text)
+        let hasTimings = sessionTimings.finishMs != nil || sessionTimings.polishMs != nil
+        historyItems = history.add(HistoryStore.Entry(
+            text: text,
+            raw: rawTranscript.isEmpty ? nil : rawTranscript,
+            polished: polishedText,
+            target: targetAppName,
+            timings: hasTimings ? sessionTimings : nil
+        ))
     }
 
     func copyHistoryItem(_ entry: HistoryStore.Entry) {
@@ -1074,6 +1283,44 @@ final class AppState: ObservableObject, @unchecked Sendable {
                 exit(1)
             }
             dbg("selftest-polish-mock: unclear → resolution ok (2 service calls)")
+            exit(0)
+        }
+    }
+
+    /// `--selftest-vocab[=FOLDER]`: show the vocabulary that would be used for
+    /// a project — the given folder, or whatever the frontmost app is working
+    /// in. Touches neither the Keychain nor the network.
+    func runVocabularySelfTest(path: String?) {
+        Task {
+            var folders: [URL] = []
+            if let path, !path.isEmpty {
+                let url = URL(fileURLWithPath: NSString(string: path).expandingTildeInPath, isDirectory: true)
+                folders = [ProjectLocator.repositoryRoot(containing: url) ?? url]
+            } else if let app = NSWorkspace.shared.frontmostApplication {
+                let window = ProjectLocator.focusedWindow(ofAppWithPID: app.processIdentifier)
+                dbg("selftest-vocab: frontmost app \(app.localizedName ?? "?"), window document \(window.documentPath ?? "none")")
+                folders = ProjectLocator.repositories(forAppWithPID: app.processIdentifier, window: window)
+            }
+            guard !folders.isEmpty else {
+                dbg("selftest-vocab: no project folder found")
+                exit(1)
+            }
+            let started = ContinuousClock.now
+            let projects = await Task.detached { folders.map(ProjectHarvester.harvest(repository:)) }.value
+            dbg("selftest-vocab: harvested \(projects.count) project(s) in \(Self.milliseconds(since: started)) ms")
+            for project in projects {
+                dbg("selftest-vocab: \(project.repository.path) — \(project.spoken.count) spoken, \(project.glossary.count) glossary")
+            }
+            let lists = VocabularyBuilder.build(
+                manual: settings.keytermList,
+                learned: settings.learnedTermList,
+                project: projects
+            )
+            let tokens = lists.keyterms.reduce(0) { $0 + VocabularyBuilder.estimatedTokens($1) }
+            dbg("selftest-vocab: \(lists.keyterms.count) keyterms, ~\(tokens) of \(VocabularyBuilder.keytermTokenBudget) budgeted tokens: "
+                + lists.keyterms.joined(separator: ", "))
+            dbg("selftest-vocab: \(lists.glossary.count) glossary terms, first 60: "
+                + lists.glossary.prefix(60).joined(separator: ", "))
             exit(0)
         }
     }
